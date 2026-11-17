@@ -90,6 +90,7 @@ class LLMConfig(BaseModel):
     top_p: Optional[float] = None
     frequency_penalty: Optional[float] = None
     presence_penalty: Optional[float] = None
+    reasoning_effort: Optional[str] = None
     
     # 工具调用配置
     tool_choice: Optional[str] = None  # "auto", "none", "required"
@@ -115,7 +116,7 @@ class LLMConfig(BaseModel):
             LLMProvider.DEEPSEEK: {
                 "api_key": os.getenv("DEEPSEEK_API_KEY"),
                 "base_url": "https://api.deepseek.com",
-                "model": os.getenv("DEEPSEEK_MODEL", "deepseek-chat"),
+                "model": os.getenv("DEEPSEEK_MODEL", "deepseek-flash"),
             },
             LLMProvider.DASHSCOPE: {
                 "api_key": os.getenv("DASHSCOPE_API_KEY"),

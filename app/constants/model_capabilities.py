@@ -185,6 +185,22 @@ DEFAULT_MODEL_CAPABILITIES: Dict[str, Dict[str, Any]] = {
     },
     
     # ==================== DeepSeek ====================
+    "deepseek-flash": {
+        "capability_level": 4,
+        "suitable_roles": [ModelRole.BOTH],
+        "features": [ModelFeature.TOOL_CALLING, ModelFeature.LONG_CONTEXT, ModelFeature.REASONING, ModelFeature.VISION, ModelFeature.COST_EFFECTIVE],
+        "recommended_depths": ["快速", "基础", "标准", "深度", "全面"],
+        "performance_metrics": {"speed": 4, "cost": 5, "quality": 4},
+        "description": "DeepSeek V4.1 Flash，支持思考、工具调用和视觉输入"
+    },
+    "deepseek-v4-pro": {
+        "capability_level": 5,
+        "suitable_roles": [ModelRole.BOTH],
+        "features": [ModelFeature.TOOL_CALLING, ModelFeature.LONG_CONTEXT, ModelFeature.REASONING],
+        "recommended_depths": ["快速", "基础", "标准", "深度", "全面"],
+        "performance_metrics": {"speed": 3, "cost": 4, "quality": 5},
+        "description": "DeepSeek V4 Pro，支持思考和工具调用"
+    },
     "deepseek-chat": {
         "capability_level": 3,
         "suitable_roles": [ModelRole.BOTH],

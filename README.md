@@ -100,7 +100,7 @@ uvicorn app.main:app
 # 6. 启动前端
 cd frontend
 npm install
-npm run dev                     # 默认 http://localhost:3000
+npm run dev                     # 默认 http://localhost:3100
 ```
 
 ### 首次登录

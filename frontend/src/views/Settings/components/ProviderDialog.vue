@@ -203,7 +203,7 @@
       <el-form-item label="测试模型" prop="test_model">
         <el-input
           v-model="formData.test_model"
-          placeholder="输入测试模型名称，如：gpt-3.5-turbo, glm-4.5-flash（留空则使用系统默认值）"
+          placeholder="输入测试模型名称，如：gpt-6.1-sol, glm-4.5-flash（留空则使用系统默认值）"
           clearable
         />
         <div class="form-tip">

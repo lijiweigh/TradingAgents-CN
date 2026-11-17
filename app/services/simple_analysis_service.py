@@ -515,6 +515,9 @@ def _get_default_provider_by_model(model_name: str) -> str:
         'gemini-2.0-flash-thinking-exp': 'google',
 
         # DeepSeek
+        'deepseek-flash': 'deepseek',
+        'deepseek-v4-pro': 'deepseek',
+        'deepseek-v4-flash': 'deepseek',
         'deepseek-chat': 'deepseek',
         'deepseek-coder': 'deepseek',
 

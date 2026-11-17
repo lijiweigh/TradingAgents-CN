@@ -252,7 +252,7 @@ class ConfigManager:
                 ),
                 ModelConfig(
                     provider="deepseek",
-                    model_name="deepseek-chat",
+                    model_name="deepseek-flash",
                     api_key="",
                     max_tokens=8000,
                     temperature=0.7,
@@ -269,7 +269,9 @@ class ConfigManager:
                 PricingConfig("dashscope", "qwen-plus-latest", 0.004, 0.012, "CNY"),
                 PricingConfig("dashscope", "qwen-max", 0.02, 0.06, "CNY"),
 
-                # DeepSeek定价 (人民币) - 2025年最新价格
+                # 最新 DeepSeek 峰时定价（美元 / 1K tokens）；保留旧型号历史估算。
+                PricingConfig("deepseek", "deepseek-flash", 0.0003, 0.0012, "USD"),
+                PricingConfig("deepseek", "deepseek-v4-pro", 0.00132, 0.00396, "USD"),
                 PricingConfig("deepseek", "deepseek-chat", 0.0014, 0.0028, "CNY"),
                 PricingConfig("deepseek", "deepseek-coder", 0.0014, 0.0028, "CNY"),
 

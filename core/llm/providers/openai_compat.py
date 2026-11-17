@@ -13,9 +13,13 @@ OpenAI 兼容 API 适配器
 
 import json
 import logging
+from collections import OrderedDict
 from typing import Any, AsyncIterator, Dict, List, Optional
 
 from openai import AsyncOpenAI, OpenAI
+from core.utils.openai_compat import (
+    is_gpt6_model, normalize_openai_chat_payload, normalize_openai_responses_payload,
+)
 
 from ..models import (
     LLMConfig,
@@ -48,6 +52,8 @@ class OpenAICompatAdapter(BaseAdapter):
         super().__init__(config)
         self._sync_client: Optional[OpenAI] = None
         self._async_client: Optional[AsyncOpenAI] = None
+        # Message 的公开结构保持不变；按工具调用 ID 保留完整工具回合，维持推理项及输出项顺序。
+        self._tool_response_items: OrderedDict[str, List[Dict[str, Any]]] = OrderedDict()
     
     def initialize(self) -> None:
         """初始化 OpenAI 客户端"""
@@ -155,6 +161,9 @@ class OpenAICompatAdapter(BaseAdapter):
         if response_format:
             request_kwargs["response_format"] = response_format
 
+        if self.config.reasoning_effort is not None:
+            request_kwargs["reasoning_effort"] = self.config.reasoning_effort
+
         # 其余 kwargs 透传（如 top_p、seed 等）
         request_kwargs.update(kwargs)
 
@@ -163,7 +172,117 @@ class OpenAICompatAdapter(BaseAdapter):
             if self.config.tool_choice:
                 request_kwargs["tool_choice"] = self.config.tool_choice
 
-        return request_kwargs
+        return normalize_openai_chat_payload(request_kwargs)
+
+    @staticmethod
+    def _uses_responses(request: Dict[str, Any]) -> bool:
+        return is_gpt6_model(request.get("model", "")) and bool(
+            request.get("tools") or any(
+                message.get("tool_calls") or message.get("role") == "tool"
+                for message in request.get("messages", [])
+            )
+        )
+
+    def _responses_request(self, request: Dict[str, Any]) -> Dict[str, Any]:
+        """将统一消息及函数工具转换为 Responses 格式，支持工具结果回传。"""
+        result = dict(request)
+        inputs = []
+        for message in result.pop("messages"):
+            if message.get("role") == "tool":
+                inputs.append({
+                    "type": "function_call_output",
+                    "call_id": message["tool_call_id"],
+                    "output": message.get("content") or "",
+                })
+                continue
+            calls = message.get("tool_calls") or []
+            if calls:
+                # 同一回合的 reasoning/message/function_call 必须按上游原顺序回传。
+                cached = next((self._tool_response_items[call["id"]]
+                               for call in calls if call["id"] in self._tool_response_items), [])
+                cached_ids = {item["call_id"] for item in cached if item.get("type") == "function_call"}
+                if cached and cached_ids == {call["id"] for call in calls}:
+                    inputs.extend(cached)
+                    continue
+            if message.get("content") or not calls:
+                inputs.append({"role": message["role"], "content": message.get("content") or ""})
+            for call in calls:
+                inputs.append({
+                    "type": "function_call", "call_id": call["id"],
+                    "name": call["function"]["name"],
+                    "arguments": call["function"]["arguments"],
+                })
+        result["input"] = inputs
+        if "max_completion_tokens" in result:
+            result["max_output_tokens"] = result.pop("max_completion_tokens")
+        if "reasoning_effort" in result:
+            result["reasoning"] = {**result.get("reasoning", {}), "effort": result.pop("reasoning_effort")}
+        if "tools" in result:
+            result["tools"] = [
+                {"type": "function", **tool["function"],
+                 "strict": tool["function"].get("strict", False)}
+                if tool.get("type") == "function" else tool
+                for tool in result["tools"]
+            ]
+        choice = result.get("tool_choice")
+        if isinstance(choice, dict) and choice.get("type") == "function":
+            result["tool_choice"] = {"type": "function", "name": choice["function"]["name"]}
+        response_format = result.pop("response_format", None)
+        if response_format:
+            format_type = response_format.get("type")
+            format_value = ({"type": "json_schema", **response_format["json_schema"]}
+                            if format_type == "json_schema" else response_format)
+            result["text"] = {**result.get("text", {}), "format": format_value}
+        # 默认无服务端持久化；encrypted_content 供工具后续回合恢复推理上下文。
+        result.setdefault("store", False)
+        result["include"] = list(dict.fromkeys([*result.get("include", []), "reasoning.encrypted_content"]))
+        return normalize_openai_responses_payload(result)
+
+    @staticmethod
+    def _response_dict(value: Any) -> Dict[str, Any]:
+        return value if isinstance(value, dict) else value.model_dump(exclude_none=True)
+
+    def _parse_responses_response(self, response: Any) -> LLMResponse:
+        data = self._response_dict(response)
+        if data.get("error") or data.get("status") in {"failed", "cancelled"}:
+            raise ValueError("OpenAI Responses 请求失败，请检查模型配置或服务状态")
+        output = data.get("output") or []
+        content = []
+        calls = []
+        for item in output:
+            if item.get("type") == "message":
+                content.extend(part.get("text", "") for part in item.get("content", [])
+                               if part.get("type") == "output_text")
+            elif item.get("type") == "function_call":
+                calls.append(ToolCall(id=item["call_id"], name=item["name"],
+                                      arguments=json.loads(item.get("arguments") or "{}")))
+                self._tool_response_items[item["call_id"]] = output
+                self._tool_response_items.move_to_end(item["call_id"])
+        while len(self._tool_response_items) > 256:
+            self._tool_response_items.popitem(last=False)
+        usage = data.get("usage")
+        return LLMResponse(
+            content="".join(content) or None,
+            tool_calls=calls,
+            finish_reason="length" if data.get("status") == "incomplete" else ("tool_calls" if calls else "stop"),
+            model=data.get("model", self.config.model), provider=self.config.provider,
+            usage={"prompt_tokens": usage.get("input_tokens", 0),
+                   "completion_tokens": usage.get("output_tokens", 0),
+                   "total_tokens": usage.get("total_tokens", 0)} if usage else None,
+        )
+
+    def _responses_stream_delta(self, event: Any) -> Optional[Dict[str, str]]:
+        data = self._response_dict(event)
+        event_type = data.get("type")
+        if event_type == "response.output_text.delta":
+            return {"type": "content", "text": data.get("delta", "")}
+        if event_type == "response.reasoning_summary_text.delta":
+            return {"type": "reasoning", "text": data.get("delta", "")}
+        if event_type in {"response.completed", "response.incomplete"}:
+            self._parse_responses_response(data["response"])
+        elif event_type in {"error", "response.failed"}:
+            raise ValueError("OpenAI Responses 流式请求失败，请检查模型配置或服务状态")
+        return None
     
     def chat(
         self,
@@ -176,6 +295,9 @@ class OpenAICompatAdapter(BaseAdapter):
             self.initialize()
         
         request_kwargs = self._build_request_kwargs(messages, tools, **kwargs)
+        if self._uses_responses(request_kwargs):
+            response = self._sync_client.responses.create(**self._responses_request(request_kwargs))
+            return self._parse_responses_response(response)
         response = self._sync_client.chat.completions.create(**request_kwargs)
         
         return self._parse_response(response)
@@ -191,6 +313,9 @@ class OpenAICompatAdapter(BaseAdapter):
             self.initialize()
         
         request_kwargs = self._build_request_kwargs(messages, tools, **kwargs)
+        if self._uses_responses(request_kwargs):
+            response = await self._async_client.responses.create(**self._responses_request(request_kwargs))
+            return self._parse_responses_response(response)
         response = await self._async_client.chat.completions.create(**request_kwargs)
         
         return self._parse_response(response)
@@ -207,6 +332,16 @@ class OpenAICompatAdapter(BaseAdapter):
         
         request_kwargs = self._build_request_kwargs(messages, tools, **kwargs)
         request_kwargs["stream"] = True
+        if self._uses_responses(request_kwargs):
+            stream = await self._async_client.responses.create(**self._responses_request(request_kwargs))
+            try:
+                async for event in stream:
+                    delta = self._responses_stream_delta(event)
+                    if delta and delta["type"] == "content":
+                        yield delta["text"]
+            finally:
+                await stream.close()
+            return
         
         async for chunk in await self._async_client.chat.completions.create(**request_kwargs):
             # 安全访问 delta：推理模型流式时可能先输出 reasoning_content 再输出 content
@@ -235,6 +370,17 @@ class OpenAICompatAdapter(BaseAdapter):
 
         request_kwargs = self._build_request_kwargs(messages, tools, **kwargs)
         request_kwargs["stream"] = True
+
+        if self._uses_responses(request_kwargs):
+            stream = self._sync_client.responses.create(**self._responses_request(request_kwargs))
+            try:
+                for event in stream:
+                    delta = self._responses_stream_delta(event)
+                    if delta:
+                        yield delta
+            finally:
+                stream.close()
+            return
 
         stream = self._sync_client.chat.completions.create(**request_kwargs)
         for chunk in stream:

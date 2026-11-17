@@ -8,7 +8,8 @@ import time
 from typing import Any, Dict, List, Optional, Union
 from langchain_core.messages import BaseMessage
 from langchain_core.outputs import ChatResult
-from langchain_openai import ChatOpenAI
+from tradingagents.llm_adapters.openai_model_adapter import ChatOpenAI
+from tradingagents.llm_adapters.deepseek_adapter import ChatDeepSeek
 from langchain_core.callbacks import CallbackManagerForLLMRun
 
 # 导入统一日志系统
@@ -100,7 +101,7 @@ class OpenAICompatibleBase(ChatOpenAI):
 
                 # 验证环境变量中的 API Key 是否有效（排除占位符）
                 if env_api_key and is_valid_api_key(env_api_key):
-                    logger.info(f"✅ [{provider_name}初始化] 环境变量中的 API Key 有效，长度: {len(env_api_key)}, 前10位: {env_api_key[:100]}...")
+                    logger.info(f"✅ [{provider_name}初始化] 环境变量中的 API Key 有效，长度: {len(env_api_key)}")
                     api_key = env_api_key
                 elif env_api_key:
                     logger.warning(f"⚠️ [{provider_name}初始化] 环境变量中的 API Key 无效（可能是占位符），将被忽略")
@@ -266,22 +267,21 @@ def normalize_openai_temperature(
     return forced_temperature
 
 
-class ChatDeepSeekOpenAI(OpenAICompatibleBase):
+class ChatDeepSeekOpenAI(ChatDeepSeek):
     """DeepSeek OpenAI兼容适配器"""
     
     def __init__(
         self,
-        model: str = "deepseek-chat",
+        model: str = "deepseek-flash",
         api_key: Optional[str] = None,
         temperature: float = 0.1,
         max_tokens: Optional[int] = None,
+        base_url: str = "https://api.deepseek.com",
         **kwargs
     ):
         super().__init__(
-            provider_name="deepseek",
             model=model,
-            api_key_env_var="DEEPSEEK_API_KEY",
-            base_url="https://api.deepseek.com",
+            base_url=base_url,
             api_key=api_key,
             temperature=temperature,
             max_tokens=max_tokens,
@@ -575,8 +575,9 @@ OPENAI_COMPATIBLE_PROVIDERS = {
         "base_url": "https://api.deepseek.com",
         "api_key_env": "DEEPSEEK_API_KEY",
         "models": {
-            "deepseek-chat": {"context_length": 32768, "supports_function_calling": True},
-            "deepseek-coder": {"context_length": 16384, "supports_function_calling": True}
+            "deepseek-flash": {"context_length": 1000000, "supports_function_calling": True},
+            "deepseek-v4-pro": {"context_length": 1000000, "supports_function_calling": True},
+            "deepseek-v4-flash": {"context_length": 1000000, "supports_function_calling": True}
         }
     },
     "dashscope": {
@@ -693,7 +694,7 @@ def create_openai_compatible_llm(
         max_tokens=max_tokens,
         **kwargs,
     )
-    if provider_info.get("base_url") is None and base_url:
+    if (provider_info.get("base_url") is None or provider == "deepseek") and base_url:
         init_kwargs["base_url"] = base_url
 
     return adapter_class(**init_kwargs)

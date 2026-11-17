@@ -408,8 +408,8 @@ const availableModels = computed(() => {
       { label: 'kimi-k2.6', value: 'kimi-k2.6' }
     ],
     deepseek: [
-      { label: 'deepseek-chat', value: 'deepseek-chat' },
-      { label: 'deepseek-coder', value: 'deepseek-coder' }
+      { label: 'DeepSeek V4.1 Flash', value: 'deepseek-flash' },
+      { label: 'DeepSeek V4 Pro', value: 'deepseek-v4-pro' }
     ],
     dashscope: [
       { label: 'qwen-turbo', value: 'qwen-turbo' },

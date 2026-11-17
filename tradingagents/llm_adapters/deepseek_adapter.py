@@ -40,7 +40,8 @@ class ChatDeepSeek(ChatOpenAI):
     def _supports_thinking_mode(model: str) -> bool:
         normalized = str(model or "").strip().lower()
         return (
-            normalized.startswith("deepseek-v4")
+            normalized.startswith("deepseek-flash")
+            or normalized.startswith("deepseek-v4")
             or "reasoner" in normalized
             or normalized.startswith("deepseek-r1")
         )
@@ -48,14 +49,17 @@ class ChatDeepSeek(ChatOpenAI):
     @staticmethod
     def _build_thinking_kwargs(model: str, kwargs: Dict[str, Any]) -> Dict[str, Any]:
         updated_kwargs = dict(kwargs)
-        thinking = updated_kwargs.pop("thinking", None)
         extra_body = dict(updated_kwargs.get("extra_body") or {})
 
-        if thinking is not None:
-            extra_body["thinking"] = thinking
+        if "thinking" in updated_kwargs:
+            extra_body["thinking"] = updated_kwargs.pop("thinking")
 
-        if ChatDeepSeek._supports_thinking_mode(model):
-            extra_body.setdefault("thinking", {"type": "enabled"})
+        # 官方默认即为 high。只补 effort，不注入优先级更高的 thinking，
+        # 否则调用方后续 bind/invoke(reasoning_effort="none") 无法关闭思考。
+        model_kwargs = updated_kwargs.get("model_kwargs") or {}
+        if (ChatDeepSeek._supports_thinking_mode(model)
+                and "reasoning_effort" not in model_kwargs
+                and "reasoning_effort" not in extra_body):
             updated_kwargs.setdefault("reasoning_effort", "high")
 
         if extra_body:
@@ -65,7 +69,7 @@ class ChatDeepSeek(ChatOpenAI):
     
     def __init__(
         self,
-        model: str = "deepseek-chat",
+        model: str = "deepseek-flash",
         api_key: Optional[str] = None,
         base_url: str = "https://api.deepseek.com",
         temperature: float = 0.1,
@@ -76,7 +80,7 @@ class ChatDeepSeek(ChatOpenAI):
         初始化DeepSeek适配器
         
         Args:
-            model: 模型名称，默认为deepseek-chat
+            model: 模型名称，默认为deepseek-flash
             api_key: API密钥，如果不提供则从环境变量DEEPSEEK_API_KEY获取
             base_url: API基础URL
             temperature: 温度参数
@@ -147,13 +151,13 @@ class ChatDeepSeek(ChatOpenAI):
 
         additional_kwargs = getattr(message, "additional_kwargs", {}) or {}
         reasoning_content = additional_kwargs.get("reasoning_content")
-        if reasoning_content:
+        if reasoning_content is not None:
             return str(reasoning_content)
 
         response_metadata = getattr(message, "response_metadata", {}) or {}
         if isinstance(response_metadata, dict):
             reasoning_content = response_metadata.get("reasoning_content")
-            if reasoning_content:
+            if reasoning_content is not None:
                 return str(reasoning_content)
 
         content = getattr(message, "content", None)
@@ -172,7 +176,7 @@ class ChatDeepSeek(ChatOpenAI):
     def _convert_message_to_deepseek_dict(self, message: BaseMessage) -> Dict[str, Any]:
         message_dict = _convert_message_to_dict(message)
         reasoning_content = self._extract_reasoning_content_from_message(message)
-        if reasoning_content and message_dict.get("role") == "assistant":
+        if reasoning_content is not None and message_dict.get("role") == "assistant":
             message_dict["reasoning_content"] = reasoning_content
         return message_dict
 
@@ -255,10 +259,41 @@ class ChatDeepSeek(ChatOpenAI):
     ) -> Dict[str, Any]:
         messages = self._convert_input(input_).to_messages()
         messages = self._sanitize_messages_for_deepseek(messages)
+        # LangChain 构造参数使用 max_completion_tokens 别名；先合并单次调用
+        # 的 max_tokens，防止构造时的预算覆盖 invoke/bind 的新预算。
+        if "max_tokens" in kwargs:
+            kwargs["max_completion_tokens"] = kwargs.pop("max_tokens")
+        if "thinking" in kwargs:
+            extra_body = dict(kwargs.get("extra_body", self.extra_body) or {})
+            extra_body["thinking"] = kwargs.pop("thinking")
+            kwargs["extra_body"] = extra_body
         payload = super()._get_request_payload(input_, stop=stop, **kwargs)
         if "messages" in payload:
             payload["messages"] = [self._convert_message_to_deepseek_dict(message) for message in messages]
+            # DeepSeek Chat Completions 的正式参数是 max_tokens。
+            if "max_completion_tokens" in payload:
+                payload["max_tokens"] = payload.pop("max_completion_tokens")
+            if isinstance(payload.get("extra_body"), dict):
+                extra_body = dict(payload["extra_body"])
+                if "max_completion_tokens" in extra_body:
+                    limit = extra_body.pop("max_completion_tokens")
+                    extra_body.setdefault("max_tokens", limit)
+                payload["extra_body"] = extra_body
         return payload
+
+    def _convert_chunk_to_generation_chunk(
+        self, chunk: dict, default_chunk_class: type, base_generation_info: Optional[dict],
+    ):
+        """同步和异步流式共用：保留推理增量，供合并消息及后续工具回合回传。"""
+        generation = super()._convert_chunk_to_generation_chunk(
+            chunk, default_chunk_class, base_generation_info
+        )
+        choices = chunk.get("choices") or chunk.get("chunk", {}).get("choices") or []
+        if generation is not None and choices and isinstance(generation.message, AIMessage):
+            reasoning = (choices[0].get("delta") or {}).get("reasoning_content")
+            if reasoning is not None:
+                generation.message.additional_kwargs["reasoning_content"] = reasoning
+        return generation
 
     def _create_chat_result(
         self,
@@ -274,7 +309,7 @@ class ChatDeepSeek(ChatOpenAI):
                 continue
             message_payload = choice.get("message") or {}
             reasoning_content = message_payload.get("reasoning_content")
-            if reasoning_content:
+            if reasoning_content is not None:
                 generation.message.additional_kwargs["reasoning_content"] = reasoning_content
 
         return result
@@ -438,7 +473,7 @@ class ChatDeepSeek(ChatOpenAI):
 
 
 def create_deepseek_llm(
-    model: str = "deepseek-chat",
+    model: str = "deepseek-flash",
     temperature: float = 0.1,
     max_tokens: Optional[int] = None,
     **kwargs

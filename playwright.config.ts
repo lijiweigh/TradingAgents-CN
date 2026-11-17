@@ -5,7 +5,7 @@ import { defineConfig, devices } from '@playwright/test'
  *
  * 前置条件:
  * 1. 后端服务运行在 http://localhost:8000
- * 2. 前端 dev server 运行在 http://localhost:3000
+ * 2. 前端 dev server 运行在 http://localhost:3100
  *
  * 运行: npx playwright test
  * 运行UI模式: npx playwright test --ui
@@ -26,7 +26,7 @@ export default defineConfig({
     timeout: 10000,
   },
   use: {
-    baseURL: process.env.E2E_BASE_URL || 'http://localhost:3002',
+    baseURL: process.env.E2E_BASE_URL || 'http://localhost:3100',
     trace: 'on-first-retry',
     screenshot: 'only-on-failure',
     video: 'retain-on-failure',

@@ -14,6 +14,12 @@ from bson import ObjectId
 
 from app.core.database import get_mongo_db
 from app.core.unified_config import unified_config
+from core.utils.openai_compat import (
+    is_gpt6_model,
+    normalize_openai_chat_payload,
+    openai_error_detail,
+    safe_openai_error,
+)
 from app.models.config import (
     SystemConfig, LLMConfig, DataSourceConfig, DatabaseConfig,
     ModelProvider, DataSourceType, DatabaseType, LLMProvider,
@@ -1226,6 +1232,7 @@ class ConfigService:
     async def test_llm_config(self, llm_config: LLMConfig) -> Dict[str, Any]:
         """测试大模型配置 - 真实调用API进行验证"""
         start_time = time.time()
+        api_key = None
         try:
             import requests
 
@@ -1321,6 +1328,8 @@ class ConfigService:
                     llm_config.temperature,
                     llm_config.max_tokens,
                     llm_config.timeout,
+                    llm_config.reasoning_effort,
+                    api_base,
                 )
                 result["response_time"] = time.time() - start_time
                 return result
@@ -1390,6 +1399,11 @@ class ConfigService:
                     "temperature": llm_config.temperature
                 }
 
+                if llm_config.reasoning_effort:
+                    data["reasoning_effort"] = llm_config.reasoning_effort
+                data = normalize_openai_chat_payload(data, for_test=True)
+                effective_timeout = max(llm_config.timeout, 30) if is_gpt6_model(data["model"]) else llm_config.timeout
+
                 logger.info(f"🌐 发送测试请求到: {url}")
                 logger.info(f"📦 使用模型: {llm_config.model_name}")
                 logger.info(
@@ -1399,7 +1413,7 @@ class ConfigService:
                 logger.info(f"📦 请求数据: {data}")
 
                 # 发送测试请求
-                response = requests.post(url, json=data, headers=headers, timeout=llm_config.timeout)
+                response = requests.post(url, json=data, headers=headers, timeout=effective_timeout)
                 response_time = time.time() - start_time
 
                 logger.info(f"📡 收到响应: HTTP {response.status_code}")
@@ -1446,10 +1460,10 @@ class ConfigService:
                             }
                     except Exception as e:
                         logger.error(f"❌ 解析响应失败: {e}")
-                        logger.error(f"   响应文本: {response.text[:500]}")
+                        logger.error(f"   响应文本: {safe_openai_error(response.text, api_key)}")
                         return {
                             "success": False,
-                            "message": f"解析响应失败: {str(e)}",
+                            "message": f"解析响应失败: {safe_openai_error(e, api_key)}",
                             "response_time": response_time,
                             "details": None
                         }
@@ -1486,7 +1500,7 @@ class ConfigService:
                             f"4. Ollama 版本过低，不支持 OpenAI 兼容模式（需要 Ollama 0.1.0+）"
                         )
                     else:
-                        error_msg = f"API端点不存在，请检查API基础URL是否正确: {url}"
+                        error_msg = openai_error_detail(response, api_key) or f"API端点不存在，请检查API基础URL是否正确: {url}"
                     
                     return {
                         "success": False,
@@ -1502,10 +1516,10 @@ class ConfigService:
                 else:
                     try:
                         error_detail = response.json()
-                        error_msg = error_detail.get("error", {}).get("message", f"HTTP {response.status_code}")
+                        error_msg = openai_error_detail(response, api_key) or f"HTTP {response.status_code}"
                         return {
                             "success": False,
-                            "message": f"API测试失败: {error_msg}",
+                            "message": f"API测试失败: HTTP {response.status_code} - {error_msg}",
                             "response_time": response_time,
                             "details": None
                         }
@@ -1529,7 +1543,7 @@ class ConfigService:
             response_time = time.time() - start_time
             return {
                 "success": False,
-                "message": f"连接失败，请检查API基础URL是否正确: {str(e)}",
+                "message": f"连接失败，请检查API基础URL是否正确: {safe_openai_error(e, api_key)}",
                 "response_time": response_time,
                 "details": None
             }
@@ -1538,7 +1552,7 @@ class ConfigService:
             logger.error(f"❌ 测试大模型配置失败: {e}")
             return {
                 "success": False,
-                "message": f"连接失败: {str(e)}",
+                "message": f"连接失败: {safe_openai_error(e, api_key)}",
                 "response_time": response_time,
                 "details": None
             }
@@ -3347,20 +3361,20 @@ class ConfigService:
                 "provider_name": "DeepSeek",
                 "models": [
                     {
-                        "name": "deepseek-chat",
-                        "display_name": "DeepSeek Chat - 通用对话",
-                        "input_price_per_1k": 0.0001,
-                        "output_price_per_1k": 0.0002,
-                        "context_length": 32768,
-                        "currency": "CNY"
+                        "name": "deepseek-flash",
+                        "display_name": "DeepSeek V4.1 Flash（峰时价格）",
+                        "input_price_per_1k": 0.0003,
+                        "output_price_per_1k": 0.0012,
+                        "context_length": 1000000,
+                        "currency": "USD"
                     },
                     {
-                        "name": "deepseek-coder",
-                        "display_name": "DeepSeek Coder - 代码专用",
-                        "input_price_per_1k": 0.0001,
-                        "output_price_per_1k": 0.0002,
-                        "context_length": 16384,
-                        "currency": "CNY"
+                        "name": "deepseek-v4-pro",
+                        "display_name": "DeepSeek V4 Pro（峰时价格）",
+                        "input_price_per_1k": 0.00132,
+                        "output_price_per_1k": 0.00396,
+                        "context_length": 1000000,
+                        "currency": "USD"
                     }
                 ]
             },
@@ -4624,6 +4638,7 @@ class ConfigService:
         llm_temperature = 0.1
         llm_max_tokens = 200
         llm_timeout = 15
+        llm_reasoning_effort = None
 
         try:
             system_config = await self.get_system_config()
@@ -4662,6 +4677,7 @@ class ConfigService:
                 llm_temperature = matched_llm_config.temperature
                 llm_max_tokens = matched_llm_config.max_tokens
                 llm_timeout = matched_llm_config.timeout
+                llm_reasoning_effort = matched_llm_config.reasoning_effort
                 logger.info(
                     f"🔧 [{display_name}] API测试使用配置参数: "
                     f"model={matched_llm_config.model_name}, "
@@ -4708,6 +4724,8 @@ class ConfigService:
                     llm_temperature,
                     llm_max_tokens,
                     llm_timeout,
+                    llm_reasoning_effort,
+                    provider_data.get("default_base_url") if provider_data else None,
                 )
             elif provider_name == "dashscope":
                 return await asyncio.get_event_loop().run_in_executor(None, self._test_dashscope_api, api_key, display_name, test_model)
@@ -4953,6 +4971,8 @@ class ConfigService:
         temperature: float = 0.1,
         max_tokens: int = 200,
         timeout: int = 15,
+        reasoning_effort: Optional[str] = None,
+        api_base: Optional[str] = None,
     ) -> dict:
         """测试DeepSeek API"""
         try:
@@ -4980,14 +5000,14 @@ class ConfigService:
                 model_name = test_model.strip()
                 logger.info(f"🔍 使用用户指定的测试模型: {model_name}")
             else:
-                model_name = "deepseek-chat"
+                model_name = "deepseek-flash"
                 logger.info(f"⚠️ 未指定模型，使用默认模型: {model_name}")
 
             logger.info(f"🔍 [DeepSeek 测试] 使用模型: {model_name}")
 
-            url = "https://api.deepseek.com/chat/completions"
+            url = f"{(api_base or 'https://api.deepseek.com').rstrip('/')}/chat/completions"
             effective_temperature = float(temperature if temperature is not None else 0.1)
-            effective_timeout = max(int(timeout if timeout is not None else 15), 1)
+            effective_timeout = max(int(timeout if timeout is not None else 15), 30)
             requested_max_tokens = int(max_tokens if max_tokens is not None else 200)
             effective_max_tokens = max(requested_max_tokens, 256)
 
@@ -5010,6 +5030,8 @@ class ConfigService:
                 "temperature": effective_temperature
             }
 
+            if reasoning_effort is not None:
+                data["reasoning_effort"] = reasoning_effort
             response = requests.post(url, json=data, headers=headers, timeout=effective_timeout)
 
             if response.status_code == 200:
@@ -5077,13 +5099,13 @@ class ConfigService:
             else:
                 return {
                     "success": False,
-                    "message": f"{display_name} API测试失败: HTTP {response.status_code}"
+                    "message": f"{display_name} API测试失败: HTTP {response.status_code} {openai_error_detail(response, api_key)}"
                 }
 
         except Exception as e:
             return {
                 "success": False,
-                "message": f"{display_name} API测试异常: {str(e)}"
+                "message": f"{display_name} API测试异常: {safe_openai_error(e, api_key)}"
             }
 
     def _test_dashscope_api(self, api_key: str, display_name: str, test_model: str = None) -> dict:
@@ -5120,7 +5142,9 @@ class ConfigService:
                 "temperature": 0.1
             }
 
-            response = requests.post(url, json=data, headers=headers, timeout=10)
+            data = normalize_openai_chat_payload(data, for_test=True)
+            effective_timeout = max(10, 30) if is_gpt6_model(data["model"]) else 10
+            response = requests.post(url, json=data, headers=headers, timeout=effective_timeout)
 
             if response.status_code == 200:
                 result = response.json()
@@ -5144,13 +5168,13 @@ class ConfigService:
             else:
                 return {
                     "success": False,
-                    "message": f"{display_name} API测试失败: HTTP {response.status_code}"
+                    "message": f"{display_name} API测试失败: HTTP {response.status_code} {openai_error_detail(response, api_key)}"
                 }
 
         except Exception as e:
             return {
                 "success": False,
-                "message": f"{display_name} API测试异常: {str(e)}"
+                "message": f"{display_name} API测试异常: {safe_openai_error(e, api_key)}"
             }
 
     def _test_openrouter_api(self, api_key: str, display_name: str, test_model: str = None) -> dict:
@@ -5184,7 +5208,9 @@ class ConfigService:
                 "temperature": 0.1
             }
 
-            response = requests.post(url, json=data, headers=headers, timeout=15)
+            data = normalize_openai_chat_payload(data, for_test=True)
+            effective_timeout = max(15, 30) if is_gpt6_model(data["model"]) else 15
+            response = requests.post(url, json=data, headers=headers, timeout=effective_timeout)
 
             if response.status_code == 200:
                 result = response.json()
@@ -5208,13 +5234,13 @@ class ConfigService:
             else:
                 return {
                     "success": False,
-                    "message": f"{display_name} API测试失败: HTTP {response.status_code}"
+                    "message": f"{display_name} API测试失败: HTTP {response.status_code} {openai_error_detail(response, api_key)}"
                 }
 
         except Exception as e:
             return {
                 "success": False,
-                "message": f"{display_name} API测试异常: {str(e)}"
+                "message": f"{display_name} API测试异常: {safe_openai_error(e, api_key)}"
             }
 
     def _test_openai_api(self, api_key: str, display_name: str, test_model: str = None) -> dict:
@@ -5227,7 +5253,7 @@ class ConfigService:
                 model_name = test_model.strip()
                 logger.info(f"🔍 使用用户指定的测试模型: {model_name}")
             else:
-                model_name = "gpt-3.5-turbo"
+                model_name = "gpt-4o-mini"
                 logger.info(f"⚠️ 未指定模型，使用默认模型: {model_name}")
 
             url = "https://api.openai.com/v1/chat/completions"
@@ -5240,13 +5266,17 @@ class ConfigService:
             data = {
                 "model": model_name,
                 "messages": [
-                    {"role": "user", "content": "你好，请简单介绍一下你自己。"}
+                    {"role": "user", "content": "Reply OK."}
                 ],
                 "max_tokens": 50,
                 "temperature": 0.1
             }
 
-            response = requests.post(url, json=data, headers=headers, timeout=10)
+            data = normalize_openai_chat_payload(data, for_test=True)
+            response = requests.post(
+                url, json=data, headers=headers,
+                timeout=30 if is_gpt6_model(model_name) else 10,
+            )
 
             if response.status_code == 200:
                 result = response.json()
@@ -5268,15 +5298,17 @@ class ConfigService:
                         "message": f"{display_name} API响应格式异常"
                     }
             else:
+                detail = openai_error_detail(response, api_key)
+                suffix = f" - {detail}" if detail else ""
                 return {
                     "success": False,
-                    "message": f"{display_name} API测试失败: HTTP {response.status_code}"
+                    "message": f"{display_name} API测试失败: HTTP {response.status_code}{suffix}"
                 }
 
         except Exception as e:
             return {
                 "success": False,
-                "message": f"{display_name} API测试异常: {str(e)}"
+                "message": f"{display_name} API测试异常: {safe_openai_error(e, api_key)}"
             }
 
     def _test_anthropic_api(self, api_key: str, display_name: str, test_model: str = None) -> dict:
@@ -5371,7 +5403,9 @@ class ConfigService:
                 "temperature": 0.1
             }
 
-            response = requests.post(url, json=data, headers=headers, timeout=15)
+            data = normalize_openai_chat_payload(data, for_test=True)
+            effective_timeout = max(15, 30) if is_gpt6_model(data["model"]) else 15
+            response = requests.post(url, json=data, headers=headers, timeout=effective_timeout)
 
             if response.status_code == 200:
                 result = response.json()
@@ -5418,13 +5452,13 @@ class ConfigService:
                 except:
                     return {
                         "success": False,
-                        "message": f"{display_name} API测试失败: HTTP {response.status_code}"
+                        "message": f"{display_name} API测试失败: HTTP {response.status_code} {openai_error_detail(response, api_key)}"
                     }
 
         except Exception as e:
             return {
                 "success": False,
-                "message": f"{display_name} API测试异常: {str(e)}"
+                "message": f"{display_name} API测试异常: {safe_openai_error(e, api_key)}"
             }
 
     async def fetch_provider_models(self, provider_id: str, filters: Optional[Dict[str, Any]] = None) -> dict:
@@ -5847,7 +5881,7 @@ class ConfigService:
                 logger.info(f"🔍 使用用户指定的测试模型: {final_test_model}")
             else:
                 # 用户未填写，使用系统默认值
-                final_test_model = "gpt-3.5-turbo"  # 默认模型
+                final_test_model = "gpt-4o-mini"  # 默认模型
                 if provider_name == "siliconflow":
                     # 硅基流动使用免费的 Qwen 模型进行测试
                     final_test_model = "Qwen/Qwen2.5-7B-Instruct"
@@ -5870,7 +5904,9 @@ class ConfigService:
                 "temperature": temperature
             }
 
-            response = requests.post(url, json=data, headers=headers, timeout=timeout)
+            data = normalize_openai_chat_payload(data, for_test=True)
+            effective_timeout = max(timeout, 30) if is_gpt6_model(data["model"]) else timeout
+            response = requests.post(url, json=data, headers=headers, timeout=effective_timeout)
 
             if response.status_code == 200:
                 result = response.json()
@@ -5909,11 +5945,11 @@ class ConfigService:
             else:
                 try:
                     error_detail = response.json()
-                    error_msg = error_detail.get("error", {}).get("message", f"HTTP {response.status_code}")
+                    error_msg = openai_error_detail(response, api_key) or f"HTTP {response.status_code}"
                     logger.error(f"❌ [{display_name}] API测试失败")
                     logger.error(f"   请求URL: {url}")
                     logger.error(f"   状态码: {response.status_code}")
-                    logger.error(f"   错误详情: {error_detail}")
+                    logger.error(f"   错误详情: {error_msg}")
                     return {
                         "success": False,
                         "message": f"{display_name} API测试失败: {error_msg}"
@@ -5922,16 +5958,16 @@ class ConfigService:
                     logger.error(f"❌ [{display_name}] API测试失败")
                     logger.error(f"   请求URL: {url}")
                     logger.error(f"   状态码: {response.status_code}")
-                    logger.error(f"   响应内容: {response.text[:500]}")
+                    logger.error(f"   响应内容: {safe_openai_error(response.text, api_key)}")
                     return {
                         "success": False,
-                        "message": f"{display_name} API测试失败: HTTP {response.status_code}"
+                        "message": f"{display_name} API测试失败: HTTP {response.status_code} {openai_error_detail(response, api_key)}"
                     }
 
         except Exception as e:
             return {
                 "success": False,
-                "message": f"{display_name} API测试异常: {str(e)}"
+                "message": f"{display_name} API测试异常: {safe_openai_error(e, api_key)}"
             }
 
 

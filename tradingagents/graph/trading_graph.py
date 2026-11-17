@@ -8,7 +8,7 @@ from typing import Dict, Any, Tuple, List, Optional
 import time
 import threading
 
-from langchain_openai import ChatOpenAI
+from tradingagents.llm_adapters.openai_model_adapter import ChatOpenAI
 from langchain_anthropic import ChatAnthropic
 from langchain_google_genai import ChatGoogleGenerativeAI
 from tradingagents.llm_adapters import ChatDashScopeOpenAI, ChatGoogleOpenAI
@@ -259,7 +259,8 @@ def create_llm_by_provider(provider: str, model: str, backend_url: str, temperat
             base_url=backend_url,
             temperature=temperature,
             max_tokens=max_tokens,
-            timeout=timeout
+            timeout=timeout,
+            reasoning_effort=reasoning_effort,
         )
 
     elif provider.lower() == "zhipu":
@@ -838,7 +839,8 @@ class TradingAgentsGraph:
                 base_url=deepseek_base_url,
                 temperature=deep_temperature,
                 max_tokens=deep_max_tokens,
-                timeout=deep_timeout
+                timeout=deep_timeout,
+                reasoning_effort=deep_reasoning_effort,
             )
             self.quick_thinking_llm = ChatDeepSeek(
                 model=self.config["quick_think_llm"],
@@ -846,7 +848,8 @@ class TradingAgentsGraph:
                 base_url=deepseek_base_url,
                 temperature=quick_temperature,
                 max_tokens=quick_max_tokens,
-                timeout=quick_timeout
+                timeout=quick_timeout,
+                reasoning_effort=quick_reasoning_effort,
             )
 
             logger.info(f"✅ [DeepSeek] 已启用token统计功能并应用用户配置的模型参数")
