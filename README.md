@@ -103,6 +103,23 @@ npm install
 npm run dev                     # 默认 http://localhost:3100
 ```
 
+### macOS 本地一键启停
+
+已按本仓库的本地安装方式准备好 `.venv`、前端依赖、`.env`、
+`runtime/mongodb`、`runtime/redis` 和 `runtime/redis.conf` 后，
+可在 Finder 中双击根目录的 `start.command` / `stop.command`，或运行：
+
+```bash
+./start.command
+./stop.command
+```
+
+启动脚本依次启动 MongoDB（27017）、Redis（6379）、后端（8000）和前端（3100），
+检查就绪后显示访问地址 <http://127.0.0.1:3100>。重复启动不会创建重复进程。
+所有服务仅监听本机；日志在 `runtime/logs/`，PID 在 `runtime/pids/`。
+关闭脚本先停止应用，再正常关闭数据库，保留 `runtime/data/` 内的数据。
+脚本不会自动安装依赖、初始化数据库账号或强制结束无关进程。
+
 ### 首次登录
 
 后端首次启动时会自动完成初始化（无需手动执行任何导入脚本）：
